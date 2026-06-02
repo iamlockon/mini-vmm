@@ -10,7 +10,7 @@ use std::{
 use std::os::raw::{c_uint, c_ulong};
 
 use kvm_bindings::{
-    KVM_EXIT_HLT, kvm_regs as KvmRegs, kvm_run as KvmRun, kvm_sregs as KvmSregs,
+    KVM_EXIT_IO, KVM_EXIT_HLT, KVM_EXIT_FAIL_ENTRY, KVM_EXIT_INTERNAL_ERROR, kvm_regs as KvmRegs, kvm_run as KvmRun, kvm_sregs as KvmSregs,
     kvm_userspace_memory_region as KvmUserspaceMemoryRegion,
 };
 
@@ -219,13 +219,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         let k_run: &KvmRun = unsafe { &*(kvm_run_mmap.ptr as *const KvmRun) };
 
         match k_run.exit_reason {
-            KVM_EXIT_HLT => {
-                println!("KVM_EXIT_HLT");
-                return Ok(());
-            }
-            _ => {
-                eprintln!("EXIT: {:?}", k_run);
+            KVM_EXIT_HLT => break,
+            KVM_EXIT_IO => handle_io_exit()?,
+            KVM_EXIT_FAIL_ENTRY => return Err("failed entry".into()),
+            KVM_EXIT_INTERNAL_ERROR => return Err("internal error".into()),
+            other => {
+                eprintln!("EXIT: {:?}", other);
+                return Err("unhandled KVM exit: {other}".into());
             }
         }
     }
+
+    Ok(())
+}
+
+fn handle_io_exit() -> Result<(), Box<dyn Error>> {
+    Ok(())
 }
