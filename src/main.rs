@@ -19,12 +19,6 @@ const KVM_VERSION: i32 = 12;
 const GUEST_MEM_START: u64 = 0x1000;
 const GUEST_MEM_SIZE: u64 = 2 * 4096;
 const KVMIO: c_uint = 0xAE;
-const CODE: &[u8] = &[
-    0xba, 0xe9, 0x00, // mov dx, 0xe9
-    0xb0, b'A', // mov al, 'A'
-    0xee, // out dx, al
-    0xf4, // hlt
-];
 
 // operations
 const KVM_GET_API_VERSION: c_ulong = libc::_IO(KVMIO, 0x00);
@@ -123,8 +117,25 @@ fn main() -> Result<(), Box<dyn Error>> {
         len: GUEST_MEM_SIZE as usize,
     };
 
+    let guest_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "guest.bin".to_string());
+
+    let guest_code = std::fs::read(&guest_path)?;
+    if guest_code.len() > GUEST_MEM_SIZE as usize {
+        return Err(format!(
+            "guest image too large: {} bytes > {} bytes",
+            guest_code.len(),
+            GUEST_MEM_SIZE,
+        ).into());
+    }
+    
     unsafe {
-        std::ptr::copy_nonoverlapping(CODE.as_ptr(), vm_memory_mmap.ptr as *mut u8, CODE.len());
+        std::ptr::copy_nonoverlapping(
+            guest_code.as_ptr(),
+            vm_memory_mmap.ptr as *mut u8,
+            guest_code.len(),
+        );
     }
 
     let vm_memory_addr = vm_memory_mmap.ptr as u64;
