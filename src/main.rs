@@ -10,9 +10,7 @@ use std::{
 use std::os::raw::{c_uint, c_ulong};
 
 use kvm_bindings::{
-    KVM_EXIT_FAIL_ENTRY, KVM_EXIT_HLT, KVM_EXIT_INTERNAL_ERROR, KVM_EXIT_IO, KVM_EXIT_IO_IN,
-    KVM_EXIT_IO_OUT, kvm_regs as KvmRegs, kvm_run as KvmRun, kvm_sregs as KvmSregs,
-    kvm_userspace_memory_region as KvmUserspaceMemoryRegion,
+    KVM_EXIT_FAIL_ENTRY, KVM_EXIT_HLT, KVM_EXIT_INTERNAL_ERROR, KVM_EXIT_IO, KVM_EXIT_IO_IN, KVM_EXIT_IO_OUT, KVM_EXIT_MMIO, kvm_regs as KvmRegs, kvm_run as KvmRun, kvm_sregs as KvmSregs, kvm_userspace_memory_region as KvmUserspaceMemoryRegion
 };
 
 const KVM_VERSION: i32 = 12;
@@ -164,6 +162,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let k_regs = KvmRegs {
         rip: GUEST_MEM_START,
+        rsp: 0x2000, // 2 * 4096
         rflags: 0x2,
         ..Default::default()
     };
@@ -185,9 +184,37 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err(last_os_error.into());
     }
 
+    // real mode prep 
+    k_sregs.cr0 &= !1; // clear PE bit
+
+    // Code segment
     k_sregs.cs.base = 0;
     k_sregs.cs.selector = 0;
+    k_sregs.cs.limit = 0xffff;
 
+    // Data segment
+    k_sregs.ds.base = 0;
+    k_sregs.ds.selector = 0;
+    k_sregs.ds.limit = 0xffff;
+
+    // Extra segment
+    k_sregs.es.base = 0;
+    k_sregs.es.selector = 0;
+    k_sregs.es.limit = 0xffff;
+    
+    k_sregs.fs.base = 0;
+    k_sregs.fs.selector = 0;
+    k_sregs.fs.limit = 0xffff;
+    
+    k_sregs.gs.base = 0;
+    k_sregs.gs.selector = 0;
+    k_sregs.gs.limit = 0xffff;
+
+    // Stack segment  
+    k_sregs.ss.base = 0;
+    k_sregs.ss.selector = 0;
+    k_sregs.ss.limit = 0xffff;
+    
     let ret = unsafe { libc::ioctl(vcpu_fd.as_raw_fd(), KVM_SET_SREGS, &k_sregs) };
 
     if ret != 0 {
@@ -238,13 +265,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         let k_run: &KvmRun = unsafe { &*(kvm_run_mmap.ptr as *const KvmRun) };
 
         match k_run.exit_reason {
-            KVM_EXIT_HLT => break,
+            KVM_EXIT_HLT => {
+                println!();
+                break;
+            },
             KVM_EXIT_IO => handle_io_exit(unsafe { k_run.__bindgen_anon_1.io }, kvm_run_mmap.ptr)?,
             KVM_EXIT_FAIL_ENTRY => return Err("failed entry".into()),
             KVM_EXIT_INTERNAL_ERROR => return Err("internal error".into()),
+            KVM_EXIT_MMIO => return Err("MMIO exit: guest accessed unmapped memory".into()),
             other => {
                 eprintln!("EXIT: {:?}", other);
-                return Err("unhandled KVM exit: {other}".into());
+                return Err(format!("unhandled KVM exit: {other}").into());
             }
         }
     }
