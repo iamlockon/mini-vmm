@@ -10,7 +10,8 @@ use std::{
 use std::os::raw::{c_uint, c_ulong};
 
 use kvm_bindings::{
-    KVM_EXIT_IO, KVM_EXIT_HLT, KVM_EXIT_FAIL_ENTRY, KVM_EXIT_INTERNAL_ERROR, kvm_regs as KvmRegs, kvm_run as KvmRun, kvm_sregs as KvmSregs,
+    KVM_EXIT_FAIL_ENTRY, KVM_EXIT_HLT, KVM_EXIT_INTERNAL_ERROR, KVM_EXIT_IO, KVM_EXIT_IO_IN,
+    KVM_EXIT_IO_OUT, kvm_regs as KvmRegs, kvm_run as KvmRun, kvm_sregs as KvmSregs,
     kvm_userspace_memory_region as KvmUserspaceMemoryRegion,
 };
 
@@ -18,7 +19,12 @@ const KVM_VERSION: i32 = 12;
 const GUEST_MEM_START: u64 = 0x1000;
 const GUEST_MEM_SIZE: u64 = 2 * 4096;
 const KVMIO: c_uint = 0xAE;
-const CODE: [u8; 1] = [0xF4]; // op HLT 
+const CODE: &[u8] = &[
+    0xba, 0xe9, 0x00, // mov dx, 0xe9
+    0xb0, b'A', // mov al, 'A'
+    0xee, // out dx, al
+    0xf4, // hlt
+];
 
 // operations
 const KVM_GET_API_VERSION: c_ulong = libc::_IO(KVMIO, 0x00);
@@ -30,6 +36,8 @@ const KVM_GET_SREGS: c_ulong = libc::_IOR::<KvmSregs>(KVMIO, 0x83);
 const KVM_SET_SREGS: c_ulong = libc::_IOW::<KvmSregs>(KVMIO, 0x84);
 const KVM_GET_VCPU_MMAP_SIZE: c_ulong = libc::_IO(KVMIO, 0x04);
 const KVM_RUN: c_ulong = libc::_IO(KVMIO, 0x80);
+
+type KvmRunIo = kvm_bindings::kvm_run__bindgen_ty_1__bindgen_ty_4;
 
 struct Mmap {
     ptr: *mut std::os::raw::c_void,
@@ -220,7 +228,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         match k_run.exit_reason {
             KVM_EXIT_HLT => break,
-            KVM_EXIT_IO => handle_io_exit()?,
+            KVM_EXIT_IO => handle_io_exit(unsafe { k_run.__bindgen_anon_1.io }, kvm_run_mmap.ptr)?,
             KVM_EXIT_FAIL_ENTRY => return Err("failed entry".into()),
             KVM_EXIT_INTERNAL_ERROR => return Err("internal error".into()),
             other => {
@@ -233,6 +241,48 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn handle_io_exit() -> Result<(), Box<dyn Error>> {
+fn handle_io_exit(
+    io: KvmRunIo,
+    kvm_run_mmap_ptr: *mut std::os::raw::c_void,
+) -> Result<(), Box<dyn Error>> {
+    match io.direction as u32 {
+        KVM_EXIT_IO_OUT => {
+            let run_base = kvm_run_mmap_ptr.cast::<u8>();
+            let data_len = io.size as usize * io.count as usize;
+
+            let data = unsafe {
+                std::slice::from_raw_parts(run_base.add(io.data_offset as usize), data_len)
+            };
+
+            match io.port {
+                0xe9 => {
+                    for byte in data {
+                        print!("{}", *byte as char);
+                    }
+                }
+                _ => {
+                    eprintln!("unhandled io out: port:{:#x} data={:x?}", io.port, data);
+                }
+            }
+        }
+        KVM_EXIT_IO_IN => {
+            let run_base = kvm_run_mmap_ptr.cast::<u8>();
+            let data_len = io.size as usize * io.count as usize;
+
+            let data = unsafe {
+                std::slice::from_raw_parts_mut(run_base.add(io.data_offset as usize), data_len)
+            };
+
+            match io.port {
+                _ => {
+                    data.fill(0); // placeholder value for unhandled port
+                    eprintln!("unhandled io in: port={:#x}", io.port);
+                }
+            }
+        }
+        other => {
+            return Err(format!("unknown io direction: {other}").into());
+        }
+    }
     Ok(())
 }
