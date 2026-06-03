@@ -10,7 +10,9 @@ use std::{
 use std::os::raw::{c_uint, c_ulong};
 
 use kvm_bindings::{
-    KVM_EXIT_FAIL_ENTRY, KVM_EXIT_HLT, KVM_EXIT_INTERNAL_ERROR, KVM_EXIT_IO, KVM_EXIT_IO_IN, KVM_EXIT_IO_OUT, KVM_EXIT_MMIO, kvm_regs as KvmRegs, kvm_run as KvmRun, kvm_sregs as KvmSregs, kvm_userspace_memory_region as KvmUserspaceMemoryRegion
+    KVM_EXIT_FAIL_ENTRY, KVM_EXIT_HLT, KVM_EXIT_INTERNAL_ERROR, KVM_EXIT_IO, KVM_EXIT_IO_IN,
+    KVM_EXIT_IO_OUT, KVM_EXIT_MMIO, kvm_regs as KvmRegs, kvm_run as KvmRun, kvm_sregs as KvmSregs,
+    kvm_userspace_memory_region as KvmUserspaceMemoryRegion,
 };
 
 const KVM_VERSION: i32 = 12;
@@ -41,6 +43,33 @@ impl Drop for Mmap {
     fn drop(&mut self) {
         println!("calling libc:munmap");
         unsafe { libc::munmap(self.ptr, self.len) };
+    }
+}
+
+/// Handle IO for different port devices
+trait PortDevice {
+    fn handles(&self, port: u16) -> bool;
+    fn io_out(&mut self, port: u16, data: &[u8]) -> Result<(), Box<dyn Error>>;
+    fn io_in(&mut self, port: u16, data: &mut [u8]) -> Result<(), Box<dyn Error>>;
+}
+
+struct DebugPort;
+
+impl PortDevice for DebugPort {
+    fn handles(&self, port: u16) -> bool {
+        port == 0xe9
+    }
+
+    fn io_out(&mut self, _port: u16, data: &[u8]) -> Result<(), Box<dyn Error>> {
+        for byte in data {
+            print!("{}", *byte as char);
+        }
+        Ok(())
+    }
+
+    fn io_in(&mut self, _port: u16, data: &mut [u8]) -> Result<(), Box<dyn Error>> {
+        data.fill(0); // TODO: update with real data to write for the guest
+        Ok(())
     }
 }
 
@@ -125,9 +154,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             "guest image too large: {} bytes > {} bytes",
             guest_code.len(),
             GUEST_MEM_SIZE,
-        ).into());
+        )
+        .into());
     }
-    
+
     unsafe {
         std::ptr::copy_nonoverlapping(
             guest_code.as_ptr(),
@@ -184,7 +214,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err(last_os_error.into());
     }
 
-    // real mode prep 
+    // real mode prep
     k_sregs.cr0 &= !1; // clear PE bit
 
     // Code segment
@@ -201,20 +231,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     k_sregs.es.base = 0;
     k_sregs.es.selector = 0;
     k_sregs.es.limit = 0xffff;
-    
+
     k_sregs.fs.base = 0;
     k_sregs.fs.selector = 0;
     k_sregs.fs.limit = 0xffff;
-    
+
     k_sregs.gs.base = 0;
     k_sregs.gs.selector = 0;
     k_sregs.gs.limit = 0xffff;
 
-    // Stack segment  
+    // Stack segment
     k_sregs.ss.base = 0;
     k_sregs.ss.selector = 0;
     k_sregs.ss.limit = 0xffff;
-    
+
     let ret = unsafe { libc::ioctl(vcpu_fd.as_raw_fd(), KVM_SET_SREGS, &k_sregs) };
 
     if ret != 0 {
@@ -263,13 +293,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         let k_run: &KvmRun = unsafe { &*(kvm_run_mmap.ptr as *const KvmRun) };
-
+        
+        let mut devices: [&mut dyn PortDevice; 1] = [&mut DebugPort];
+        
         match k_run.exit_reason {
             KVM_EXIT_HLT => {
                 println!();
                 break;
-            },
-            KVM_EXIT_IO => handle_io_exit(unsafe { k_run.__bindgen_anon_1.io }, kvm_run_mmap.ptr)?,
+            }
+            KVM_EXIT_IO => {
+                handle_io_exit(
+                    unsafe { k_run.__bindgen_anon_1.io },
+                    kvm_run_mmap.ptr,
+                    &mut devices,
+                )?;
+            }
             KVM_EXIT_FAIL_ENTRY => return Err("failed entry".into()),
             KVM_EXIT_INTERNAL_ERROR => return Err("internal error".into()),
             KVM_EXIT_MMIO => return Err("MMIO exit: guest accessed unmapped memory".into()),
@@ -286,40 +324,32 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn handle_io_exit(
     io: KvmRunIo,
     kvm_run_mmap_ptr: *mut std::os::raw::c_void,
+    devices: &mut [&mut dyn PortDevice],
 ) -> Result<(), Box<dyn Error>> {
+    let run_base = kvm_run_mmap_ptr.cast::<u8>();
+    let data_len = io.size as usize * io.count as usize;
+
     match io.direction as u32 {
         KVM_EXIT_IO_OUT => {
-            let run_base = kvm_run_mmap_ptr.cast::<u8>();
-            let data_len = io.size as usize * io.count as usize;
-
             let data = unsafe {
                 std::slice::from_raw_parts(run_base.add(io.data_offset as usize), data_len)
             };
-
-            match io.port {
-                0xe9 => {
-                    for byte in data {
-                        print!("{}", *byte as char);
-                    }
-                }
-                _ => {
-                    eprintln!("unhandled io out: port:{:#x} data={:x?}", io.port, data);
-                }
+            if let Some(device) = devices.iter_mut().find(|d| d.handles(io.port)) {
+                device.io_out(io.port, data)?;
+            } else {
+                eprintln!("unhandled io out: port={:#x} data={:x?}", io.port, data);
             }
         }
         KVM_EXIT_IO_IN => {
-            let run_base = kvm_run_mmap_ptr.cast::<u8>();
-            let data_len = io.size as usize * io.count as usize;
-
             let data = unsafe {
                 std::slice::from_raw_parts_mut(run_base.add(io.data_offset as usize), data_len)
             };
 
-            match io.port {
-                _ => {
-                    data.fill(0); // placeholder value for unhandled port
-                    eprintln!("unhandled io in: port={:#x}", io.port);
-                }
+            if let Some(device) = devices.iter_mut().find(|d| d.handles(io.port)) {
+                device.io_in(io.port, data)?;
+            } else {
+                data.fill(0); // placeholder value for unhandled port
+                eprintln!("unhandled io in: port={:#x}", io.port);
             }
         }
         other => {
