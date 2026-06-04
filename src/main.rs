@@ -16,7 +16,8 @@ use kvm_bindings::{
 };
 
 const KVM_VERSION: i32 = 12;
-const GUEST_MEM_START: u64 = 0x1000;
+const GUEST_ENTRY: u64 = 0x1000;
+const GUEST_MEM_START: u64 = 0;
 const GUEST_MEM_SIZE: u64 = 2 * 4096;
 const KVMIO: c_uint = 0xAE;
 
@@ -69,6 +70,106 @@ impl PortDevice for DebugPort {
 
     fn io_in(&mut self, _port: u16, data: &mut [u8]) -> Result<(), Box<dyn Error>> {
         data.fill(0); // TODO: update with real data to write for the guest
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct SerialPort {
+    interrupt_enable: u8,
+    fifo_control: u8,
+    line_control: u8,
+    modem_control: u8,
+}
+
+impl SerialPort {
+    fn new() -> Self {
+        Default::default()
+    }
+}
+
+impl PortDevice for SerialPort {
+    fn handles(&self, port: u16) -> bool {
+        match port {
+            0x3f8 ..= 0x3fd => {
+                true
+            }
+            _ => false
+        }
+    }
+
+    fn io_out(&mut self, port: u16, data: &[u8]) -> Result<(), Box<dyn Error>> {
+        match port {
+            0x3f8 => {
+                for byte in data {
+                    print!("{}", *byte as char);
+                }
+            }
+            0x3f9 => {
+                // interrupt enable register
+                if let Some(byte) = data.last() {
+                    self.interrupt_enable = *byte;
+                } 
+            }
+            0x3fa => {
+                // interrupt identification / FIFO control
+                if let Some(byte) = data.last() {
+                    self.fifo_control = *byte;
+                }
+            }
+            0x3fb => {
+                // line control register
+                if let Some(byte) = data.last() {
+                    self.line_control = *byte;
+                }
+            }
+            0x3fc => {
+                // modem control register
+                if let Some(byte) = data.last() {
+                    self.modem_control = *byte;
+                }
+            }
+            0x3fd => {
+                // line status register, keep it read-only for now.
+            }
+            others => {
+                eprintln!("unhandled serial out: port={others:#x} data={data:x?}");
+            }
+        }
+        Ok(())
+    }
+
+    fn io_in(&mut self, port: u16, data: &mut [u8]) -> Result<(), Box<dyn Error>> {
+        match port {
+            0x3f8 => {
+                // receive buffer so no input available
+                data.fill(0);
+            }
+            0x3f9 => {
+                data.fill(self.interrupt_enable);
+            }
+            0x3fa => {
+                // interrupt identification register on read.
+                // Bit 0 set means no interrupt pending
+                data.fill(0x01);
+            }
+            0x3fb => {
+                data.fill(self.line_control);
+            }
+            0x3fc => {
+                data.fill(self.modem_control);
+            }
+            0x3fd => {
+                // line status register:
+                // 0x20 = transmit holding register empty
+                // 0x40 = transmit empty
+                data.fill(0x20 | 0x40);   
+            }
+            others => {
+                eprintln!("unhandled io in port: {others}");
+                data.fill(0);
+            }
+        }
         Ok(())
     }
 }
@@ -149,19 +250,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|| "guest.bin".to_string());
 
     let guest_code = std::fs::read(&guest_path)?;
-    if guest_code.len() > GUEST_MEM_SIZE as usize {
+    let load_end = GUEST_ENTRY as usize + guest_code.len();
+    if GUEST_ENTRY as usize + guest_code.len() > GUEST_MEM_SIZE as usize {
         return Err(format!(
             "guest image too large: {} bytes > {} bytes",
-            guest_code.len(),
+            load_end,
             GUEST_MEM_SIZE,
         )
         .into());
     }
 
+    let guest_load_addr = unsafe {
+        (vm_memory_mmap.ptr as *mut u8).add(GUEST_ENTRY as usize)
+    };
+
     unsafe {
         std::ptr::copy_nonoverlapping(
             guest_code.as_ptr(),
-            vm_memory_mmap.ptr as *mut u8,
+            guest_load_addr,
             guest_code.len(),
         );
     }
@@ -191,7 +297,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let k_regs = KvmRegs {
-        rip: GUEST_MEM_START,
+        rip: GUEST_ENTRY,
         rsp: 0x2000, // 2 * 4096
         rflags: 0x2,
         ..Default::default()
@@ -285,6 +391,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         len: vcpu_mmap_size as usize,
     };
 
+    let mut devices: [&mut dyn PortDevice; 2] = [
+        &mut DebugPort,
+        &mut SerialPort::new(),
+    ];
+    
     loop {
         let ret = unsafe { libc::ioctl(vcpu_fd.as_raw_fd(), KVM_RUN, 0) };
 
@@ -293,8 +404,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         let k_run: &KvmRun = unsafe { &*(kvm_run_mmap.ptr as *const KvmRun) };
-        
-        let mut devices: [&mut dyn PortDevice; 1] = [&mut DebugPort];
         
         match k_run.exit_reason {
             KVM_EXIT_HLT => {

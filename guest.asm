@@ -3,10 +3,8 @@ org 0x1000
 
 mov ax, 0
 mov ds, ax
-mov ss, ax
-mov sp, 0x2000
 
-mov dx, 0xe9
+mov dx, 0x3f8
 mov si, msg
 
 .next:
@@ -20,4 +18,5 @@ mov si, msg
     hlt
 
 msg:
-    db 'real mode ok', 0
+    db 'serial ok', 0
+    
