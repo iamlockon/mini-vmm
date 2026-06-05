@@ -23,7 +23,7 @@ use crate::{
 const KVM_VERSION: i32 = 12;
 const GUEST_ENTRY: u64 = 0x1000;
 const GUEST_MEM_START: u64 = 0;
-const GUEST_MEM_SIZE: u64 = 2 * 4096;
+const GUEST_MEM_SIZE: u64 = 64 * 1024 * 1024; // 64 MiB.
 const KVMIO: c_uint = 0xAE;
 
 const KVM_GET_API_VERSION: c_ulong = libc::_IO(KVMIO, 0x00);

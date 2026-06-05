@@ -68,26 +68,39 @@ impl GuestMemory {
     }
 
     pub fn load(&mut self, guest_addr: u64, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
-        let load_end = guest_addr as usize + bytes.len();
-        if load_end > self.size as usize {
-            return Err(format!(
-                "guest image too large: {} bytes > {} bytes",
-                load_end, self.size
-            )
-            .into());
-        }
-
-        // Guest RAM is mapped at guest physical 0, so guest_addr is also the
-        // offset into this mmap.
-        let load_addr = unsafe { (self.mmap.ptr as *mut u8).add(guest_addr as usize) };
-        unsafe {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), load_addr, bytes.len());
-        }
-
-        Ok(())
+        self.write(guest_addr, bytes)
     }
 
     pub fn userspace_addr(&self) -> u64 {
         self.mmap.ptr as u64
+    }
+
+    /// Translate guest address to host address
+    pub fn guest_to_host(&self, guest_addr: u64) -> Result<*mut u8, Box<dyn Error>> {
+        if guest_addr >= self.size {
+            return Err(format!(
+                "guest address out of range: {guest_addr:#x} >= {:#x}",
+                self.size,
+            ).into());
+        }
+
+        Ok(unsafe { (self.mmap.ptr as *mut u8).add(guest_addr as usize) })
+    }
+
+    pub fn write(&mut self, guest_addr: u64, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+        let end = guest_addr as usize + bytes.len();
+        if end > self.size as usize {
+            return Err(format!(
+                "guest write out of range: end={end:#x} size={:#x}",
+                self.size
+            ).into());
+        }
+
+        let host_addr = self.guest_to_host(guest_addr)?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), host_addr, bytes.len());
+        }
+
+        Ok(())
     }
 }
