@@ -81,7 +81,8 @@ impl GuestMemory {
             return Err(format!(
                 "guest address out of range: {guest_addr:#x} >= {:#x}",
                 self.size,
-            ).into());
+            )
+            .into());
         }
 
         Ok(unsafe { (self.mmap.ptr as *mut u8).add(guest_addr as usize) })
@@ -93,7 +94,8 @@ impl GuestMemory {
             return Err(format!(
                 "guest write out of range: end={end:#x} size={:#x}",
                 self.size
-            ).into());
+            )
+            .into());
         }
 
         let host_addr = self.guest_to_host(guest_addr)?;
