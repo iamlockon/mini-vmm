@@ -17,6 +17,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             kernel.dump_into();
             Ok(())
         }
+        Some("--linux-layout") => {
+            let path = args.next().ok_or("missing bzImage path")?;
+            let image = std::fs::read(path)?;
+            let kernel = linux_loader::LinuxKernel::parse(image)?;
+            kernel.dump_into();
+
+            let mut vmm = Vmm::empty()?;
+            linux_loader::LinuxKernel::load(vmm.memory(), &kernel)
+        }
         _ => {
             let guest_path = std::env::args()
                 .nth(1)
@@ -25,6 +34,5 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut vmm = Vmm::new(&guest_code)?;
             vmm.run()
         }
-    } 
-
+    }
 }

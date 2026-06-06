@@ -1,26 +1,32 @@
 /// For loading linux image
 use std::error::Error;
 
+use crate::memory::GuestMemory;
+
 pub struct LinuxKernel {
     /// Complete bzImage file contents.
-    image: Vec<u8>,
+    pub(crate) image: Vec<u8>,
     /// Number of 512-byte setup sectors after the boot sector.
-    pub setup_sects: u8,
+    pub(crate) setup_sects: u8,
     /// Total size of the real-mode setup area, including the first boot sector.
-    pub setup_size: usize,
+    pub(crate) setup_size: usize,
     /// Linux x86 boot protocol version from the setup header.
-    pub protocol_version: u16,
+    pub(crate) protocol_version: u16,
     /// Boot-protocol flags that describe loader/kernel requirements.
-    pub loadflags: u8,
+    pub(crate) loadflags: u8,
     /// Default protected-mode entry address for the 32-bit kernel code.
-    pub code32_start: u32,
+    pub(crate) code32_start: u32,
     /// Maximum supported kernel command-line length.
-    pub cmdline_size: u32,
+    pub(crate) cmdline_size: u32,
     /// Highest allowed physical address for an initrd image.
-    pub initrd_addr_max: u32,
+    pub(crate) initrd_addr_max: u32,
     /// Required alignment for loading the protected-mode kernel payload.
-    pub kernel_alignment: u32,
+    pub(crate) kernel_alignment: u32,
 }
+
+const BOOT_PARAMS_ADDR: u64 = 0x9000;
+const CMDLINE_ADDR: u64 = 0x20000;
+const KERNEL_LOAD_ADDR: u64 = 0x100000;
 
 impl LinuxKernel {
     pub fn parse(image: Vec<u8>) -> Result<Self, Box<dyn Error>> {
@@ -63,6 +69,27 @@ impl LinuxKernel {
             setup_sects,
             setup_size,
         })
+    }
+
+    /// Load the kernel into guest memory
+    pub fn load(
+        guest_memory: &mut GuestMemory,
+        kernel: &LinuxKernel,
+    ) -> Result<(), Box<dyn Error>> {
+        // zero the whole page for boot params
+        guest_memory.write(BOOT_PARAMS_ADDR, &[0u8; 4096])?;
+        // overlay setup/header
+        guest_memory.write(BOOT_PARAMS_ADDR, kernel.setup())?;
+        guest_memory.write(
+            BOOT_PARAMS_ADDR + 0x228,
+            &(CMDLINE_ADDR as u32).to_le_bytes(),
+        )?;
+
+        let cmdline_bytes = b"console=ttyS0 earlyprintk=serial,ttyS0,115200 panic=-1\0";
+        guest_memory.write(CMDLINE_ADDR, cmdline_bytes)?;
+        guest_memory.write(KERNEL_LOAD_ADDR, kernel.protected_mode_kernel())?;
+
+        Ok(())
     }
 
     pub fn setup(&self) -> &[u8] {

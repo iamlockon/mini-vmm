@@ -42,12 +42,18 @@ pub struct Vmm {
     _vm_fd: OwnedFd,
     vcpu_fd: OwnedFd,
     // Keep guest RAM mapped while the VM can access it.
-    _guest_memory: GuestMemory,
+    guest_memory: GuestMemory,
     kvm_run_mmap: Mmap,
 }
 
 impl Vmm {
     pub fn new(guest_code: &[u8]) -> Result<Self, Box<dyn Error>> {
+        let mut vmm = Self::empty()?;
+        vmm.guest_memory.load(GUEST_ENTRY, guest_code)?;
+        Ok(vmm)
+    }
+
+    pub fn empty() -> Result<Self, Box<dyn Error>> {
         let kvm_file = OpenOptions::new()
             .write(true)
             .custom_flags(libc::O_RDWR | libc::O_CLOEXEC)
@@ -65,8 +71,7 @@ impl Vmm {
             vcpu_fd.as_raw_fd()
         );
 
-        let mut guest_memory = GuestMemory::new(GUEST_MEM_SIZE)?;
-        guest_memory.load(GUEST_ENTRY, guest_code)?;
+        let guest_memory = GuestMemory::new(GUEST_MEM_SIZE)?;
         register_guest_memory(vm_fd.as_raw_fd(), &guest_memory)?;
         setup_regs(vcpu_fd.as_raw_fd())?;
         setup_real_mode_sregs(vcpu_fd.as_raw_fd())?;
@@ -76,7 +81,7 @@ impl Vmm {
             _kvm_file: kvm_file,
             _vm_fd: vm_fd,
             vcpu_fd,
-            _guest_memory: guest_memory,
+            guest_memory: guest_memory,
             kvm_run_mmap,
         })
     }
@@ -117,6 +122,10 @@ impl Vmm {
         }
 
         Ok(())
+    }
+
+    pub fn memory(&mut self) -> &mut GuestMemory {
+        &mut self.guest_memory
     }
 }
 
