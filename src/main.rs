@@ -24,7 +24,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             kernel.dump_into();
 
             let mut vmm = Vmm::empty()?;
-            linux_loader::LinuxKernel::load(vmm.memory(), &kernel)
+            linux_loader::LinuxKernel::load(vmm.memory(), &kernel)?;
+
+            vmm.setup_linux_protected_mode()?;
+            vmm.setup_linux_regs(
+                linux_loader::KERNEL_LOAD_ADDR,
+                linux_loader::BOOT_PARAMS_ADDR,
+            )?;
+            Ok(())
         }
         _ => {
             let guest_path = std::env::args()

@@ -24,9 +24,9 @@ pub struct LinuxKernel {
     pub(crate) kernel_alignment: u32,
 }
 
-const BOOT_PARAMS_ADDR: u64 = 0x9000;
+pub(crate) const BOOT_PARAMS_ADDR: u64 = 0x9000;
 const CMDLINE_ADDR: u64 = 0x20000;
-const KERNEL_LOAD_ADDR: u64 = 0x100000;
+pub(crate) const KERNEL_LOAD_ADDR: u64 = 0x100000;
 
 const SECTOR_SIZE: usize = 512;
 const BOOT_PARAMS_SIZE: usize = 4096;

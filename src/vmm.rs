@@ -124,6 +124,86 @@ impl Vmm {
         Ok(())
     }
 
+    pub fn setup_linux_regs(
+        &self,
+        entry: u64,
+        boot_params_addr: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        let regs = KvmRegs {
+            rip: entry,
+            rsi: boot_params_addr,
+            rflags: 0x2,
+            ..Default::default()
+        };
+
+        let ret = unsafe { libc::ioctl(self.vcpu_fd.as_raw_fd(), KVM_SET_REGS, &regs) };
+        if ret != 0 {
+            eprintln!("error setting linux kvm_regs");
+            return Err(std::io::Error::last_os_error().into());
+        }
+
+        Ok(())
+    }
+
+    pub fn setup_linux_protected_mode(&self) -> Result<(), Box<dyn Error>> {
+        let mut sregs = KvmSregs::default();
+
+        let ret = unsafe { libc::ioctl(self.vcpu_fd.as_raw_fd(), KVM_GET_SREGS, &mut sregs) };
+        if ret != 0 {
+            eprintln!("error getting linux kvm_sregs");
+            return Err(std::io::Error::last_os_error().into());
+        }
+
+        sregs.cr0 |= 1;
+
+        let code_segment = kvm_bindings::kvm_segment {
+            base: 0,
+            limit: 0xffff_ffff,
+            selector: 0x8,
+            type_: 0b1011, // execute/read, accessed
+            present: 1,
+            dpl: 0,
+            db: 1, // 32-bit segment
+            s: 1,  // code/data segment
+            l: 0,  // not 64-bit
+            g: 1,  // 4 KiB granularity
+            avl: 0,
+            unusable: 0,
+            padding: 0,
+        };
+
+        let data_segment = kvm_bindings::kvm_segment {
+            base: 0,
+            limit: 0xffff_ffff,
+            selector: 0x10,
+            type_: 0b0011, // read/write accessed
+            present: 1,
+            dpl: 0,
+            db: 1,
+            s: 1,
+            l: 0,
+            g: 1,
+            avl: 0,
+            unusable: 0,
+            padding: 0,
+        };
+
+        sregs.cs = code_segment;
+        sregs.ds = data_segment;
+        sregs.es = data_segment;
+        sregs.fs = data_segment;
+        sregs.gs = data_segment;
+        sregs.ss = data_segment;
+
+        let ret = unsafe { libc::ioctl(self.vcpu_fd.as_raw_fd(), KVM_SET_SREGS, &sregs) };
+        if ret != 0 {
+            eprintln!("error setting linux kvm_sregs");
+            return Err(std::io::Error::last_os_error().into());
+        }
+
+        Ok(())
+    }
+
     pub fn memory(&mut self) -> &mut GuestMemory {
         &mut self.guest_memory
     }
